@@ -565,6 +565,45 @@ set(ACPP_FILESYSTEM_SEARCH_OPTIONS "Final;Experimental;Boost" CACHE STRING "Whic
 ##########################################################
 add_subdirectory(src)
 
+# =============================================================================
+# Windows LLVM-component static-link fix
+# =============================================================================
+#
+# When AdaptiveCpp is built as an LLVM component on native Windows with
+# LLVM_ADAPTIVECPP_LINK_INTO_TOOLS=ON, AdaptiveCpp.lib is injected into LLVM
+# tools such as bugpoint. AdaptiveCpp's compiler code uses the LLVM new pass
+# manager (llvm::PassBuilder, llvm::PipelineTuningOptions,
+# llvm::OptimizationLevel, ...), whose implementations live in LLVMPasses.
+#
+# In a static LLVM build these transitive symbols are not automatically pulled
+# into every LLVM tool. Propagating LLVMPasses from the AdaptiveCpp target makes
+# consumers link the required component and fixes the unresolved PassBuilder /
+# OptimizationLevel symbols seen with lld-link.
+#
+# Keep this narrowly scoped to the integrated Windows build. Standalone builds
+# already use LLVM_LIBS through AdaptiveCpp's normal configure_target() path.
+if(WIN32 AND ACPP_LLVM_COMPONENT AND LLVM_ADAPTIVECPP_LINK_INTO_TOOLS)
+  # AdaptiveCpp is created in src/compiler, while this integration fix lives in
+  # the top-level AdaptiveCpp directory. CMP0079=NEW explicitly permits
+  # target_link_libraries() to modify a target created in another directory.
+  if(POLICY CMP0079)
+    cmake_policy(PUSH)
+    cmake_policy(SET CMP0079 NEW)
+  endif()
+
+  if(TARGET AdaptiveCpp AND TARGET LLVMPasses)
+    target_link_libraries(AdaptiveCpp PUBLIC LLVMPasses)
+  else()
+    message(FATAL_ERROR
+      "AdaptiveCpp Windows LLVM-component build expected targets "
+      "'AdaptiveCpp' and 'LLVMPasses', but one or both were not created.")
+  endif()
+
+  if(POLICY CMP0079)
+    cmake_policy(POP)
+  endif()
+endif()
+
 set(DEFAULT_WIN32_CUDA_LINK_LINE "-L$ACPP_CUDA_LIB_PATH -lcudart")
 set(DEFAULT_CUDA_LINK_LINE "-Wl,-rpath=$ACPP_CUDA_LIB_PATH -L$ACPP_CUDA_LIB_PATH -lcudart")
 
