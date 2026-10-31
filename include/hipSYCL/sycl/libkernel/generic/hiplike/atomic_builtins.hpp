@@ -141,19 +141,60 @@ namespace CudaAtomic
     }
 
   }
+
+  template<class T>
+  HIPSYCL_HIPLIKE_BUILTIN bool compare_exchange(
+    T* ptr,
+    T& expected,
+    T desired,
+    memory_order success,
+    memory_order failure,
+    memory_scope scope
+  ) noexcept
+  {
+    static_assert(sizeof(T) == sizeof(long) || sizeof(T) == sizeof(long long),"The PTX primitive test targets 32/64-bit atomic types");
+
+    if constexpr (sizeof(T) == sizeof(long))
+    {
+      int observed = bit_cast<int>(expected);
+      const bool won = PTXAtomicDetail::compare_exchange(
+        reinterpret_cast<int*>(ptr), &observed, bit_cast<int>(desired),
+        success, failure, scope
+      );
+      expected = bit_cast<T>(observed);
+      return won;
+    }
+    else
+    {
+      long long observed = bit_cast<int>(expected);
+      const bool won = PTXAtomicDetail::compare_exchange(
+        reinterpret_cast<int*>(ptr), &observed, bit_cast<long long>(desired),
+        success, failure, scope
+      );
+      expected = bit_cast<T>(observed);
+      return won;
+    }
+
+  }
   
 }
 
-
 #else
-
-
 
 
 template <access::address_space S, class T>
 HIPSYCL_HIPLIKE_BUILTIN void
 __acpp_atomic_store(T *addr, T x, memory_order order,
                        memory_scope scope) noexcept {
+//new
+#ifdef SHARED_PTX_ATOMIC
+  if constexpr (sizeof(T) == sizeof(long) || sizeof(T) == sizeof(long long))
+  {
+    CudaAtomic::store(addr, x, order, scope);
+  }
+  else
+#endif
+//legacy
   if constexpr(sizeof(T) == sizeof(int32_t)) {
 #ifdef ACPP_NEEDS_CUDA_ATOMIC_WORKAROUNDS
     if(scope == memory_scope::device && order == memory_order::release){
@@ -170,6 +211,11 @@ template <access::address_space S>
 HIPSYCL_HIPLIKE_BUILTIN void
 __acpp_atomic_store(float *addr, float x, memory_order order,
                        memory_scope scope) noexcept {
+//new
+#ifdef SHARED_PTX_ATOMIC
+  cuda_atomic_detail::store(addr, x, order, scope);
+#else
+//legacy
   __atomic_store_n(reinterpret_cast<unsigned int *>(addr),
                    bit_cast<unsigned int>(x), builtin_memory_order(order));
 }
@@ -178,6 +224,11 @@ template <access::address_space S>
 HIPSYCL_HIPLIKE_BUILTIN void
 __acpp_atomic_store(double *addr, double x, memory_order order,
                        memory_scope scope) noexcept {
+//new
+#ifdef SHARED_PTX_ATOMIC
+  cuda_atomic_detail::store(addr, x, order, scope);
+#else
+//legacy
   __atomic_store_n(reinterpret_cast<unsigned long long *>(addr),
                    bit_cast<unsigned long long>(x), builtin_memory_order(order));
 }
@@ -185,6 +236,15 @@ __acpp_atomic_store(double *addr, double x, memory_order order,
 template <access::address_space S, class T>
 HIPSYCL_HIPLIKE_BUILTIN T __acpp_atomic_load(T *addr, memory_order order,
                                                 memory_scope scope) noexcept {
+//new
+#ifdef SHARED_PTX_ATOMIC
+  if constexpr (sizeof(T) == sizeof(long) || sizeof(T) == sizeof(long long))
+  {
+    CudaAtomic::load(addr, order, scope);
+  }
+  else
+#endif
+//legacy
   if constexpr(sizeof(T) == sizeof(int32_t)) {
 #ifdef ACPP_NEEDS_CUDA_ATOMIC_WORKAROUNDS
     if(scope == memory_scope::device && order == memory_order::acquire){
@@ -200,6 +260,9 @@ template <access::address_space S>
 HIPSYCL_HIPLIKE_BUILTIN float
 __acpp_atomic_load(float *addr, memory_order order,
                       memory_scope scope) noexcept {
+#ifdef SHARED_PTX_ATOMIC
+  return cuda_atomic_detail::load(addr, order, scope);
+#else
   return bit_cast<float>(__atomic_load_n(reinterpret_cast<unsigned int *>(addr),
                                          builtin_memory_order(order)));
 }
@@ -208,6 +271,9 @@ template <access::address_space S>
 HIPSYCL_HIPLIKE_BUILTIN double
 __acpp_atomic_load(double *addr, memory_order order,
                       memory_scope scope) noexcept {
+#ifdef SHARED_PTX_ATOMIC
+  return cuda_atomic_detail::load(addr, order, scope);
+#else
   return bit_cast<double>(
       __atomic_load_n(reinterpret_cast<unsigned long long *>(addr),
                       builtin_memory_order(order)));
@@ -288,9 +354,18 @@ HIPSYCL_HIPLIKE_BUILTIN bool __acpp_atomic_compare_exchange_strong(
     T *addr, T &expected, T desired, memory_order success, memory_order failure,
     memory_scope scope) noexcept {
 
-  T old = expected;
-  expected = atomicCAS(addr, expected, desired);
-  return old == expected;
+#ifdef SHARED_PTX_ATOMIC
+  if constexpr (sizeof(T) == sizeof(int) || sizeof(T) == sizeof(long long))
+  {
+    return CudaAtomic::compare_exchange(addr, expected, desired, success, failure, scope);
+  }
+  else
+#endif
+  {
+    T old = expected;
+    expected = atomicCAS(addr, expected, desired);
+    return old == expected;
+  }
 }
 
 
