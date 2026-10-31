@@ -108,9 +108,9 @@ namespace CudaAtomic
     memory_scope scope
   ) noexcept
   {
-    static_assert(sizeof(T) == sizeof(long) || sizeof(T) == sizeof(long long),"The PTX primitive test targets 32/64-bit atomic types");
+    static_assert(sizeof(T) == sizeof(int32_t) || sizeof(T) == sizeof(long long),"The PTX primitive test targets 32/64-bit atomic types");
 
-    if constexpr (sizeof(T) == sizeof(long))
+    if constexpr (sizeof(T) == sizeof(int32_t))
     {
       PTXAtomicDetail::store(reinterpret_cast<int*>(ptr), bit_cast<int>(value), order, scope);
     }
@@ -129,9 +129,9 @@ namespace CudaAtomic
     memory_scope scope
   ) noexcept
   {
-    static_assert(sizeof(T) == sizeof(long) || sizeof(T) == sizeof(long long),"The PTX primitive test targets 32/64-bit atomic types");
+    static_assert(sizeof(T) == sizeof(int32_t) || sizeof(T) == sizeof(long long),"The PTX primitive test targets 32/64-bit atomic types");
 
-    if constexpr (sizeof(T) == sizeof(long))
+    if constexpr (sizeof(T) == sizeof(int32_t))
     {
       PTXAtomicDetail::load(reinterpret_cast<int*>(ptr), order, scope);
     }
@@ -152,9 +152,9 @@ namespace CudaAtomic
     memory_scope scope
   ) noexcept
   {
-    static_assert(sizeof(T) == sizeof(long) || sizeof(T) == sizeof(long long),"The PTX primitive test targets 32/64-bit atomic types");
+    static_assert(sizeof(T) == sizeof(int32_t) || sizeof(T) == sizeof(long long),"The PTX primitive test targets 32/64-bit atomic types");
 
-    if constexpr (sizeof(T) == sizeof(long))
+    if constexpr (sizeof(T) == sizeof(int32_t))
     {
       int observed = bit_cast<int>(expected);
       const bool won = PTXAtomicDetail::compare_exchange(
@@ -188,7 +188,7 @@ __acpp_atomic_store(T *addr, T x, memory_order order,
                        memory_scope scope) noexcept {
 //new
 #ifdef SHARED_PTX_ATOMIC
-  if constexpr (sizeof(T) == sizeof(long) || sizeof(T) == sizeof(long long))
+  if constexpr (sizeof(T) == sizeof(int32_t) || sizeof(T) == sizeof(long long))
   {
     CudaAtomic::store(addr, x, order, scope);
   }
@@ -238,7 +238,7 @@ HIPSYCL_HIPLIKE_BUILTIN T __acpp_atomic_load(T *addr, memory_order order,
                                                 memory_scope scope) noexcept {
 //new
 #ifdef SHARED_PTX_ATOMIC
-  if constexpr (sizeof(T) == sizeof(long) || sizeof(T) == sizeof(long long))
+  if constexpr (sizeof(T) == sizeof(int32_t) || sizeof(T) == sizeof(long long))
   {
     CudaAtomic::load(addr, order, scope);
   }
@@ -355,7 +355,7 @@ HIPSYCL_HIPLIKE_BUILTIN bool __acpp_atomic_compare_exchange_strong(
     memory_scope scope) noexcept {
 
 #ifdef SHARED_PTX_ATOMIC
-  if constexpr (sizeof(T) == sizeof(int) || sizeof(T) == sizeof(long long))
+  if constexpr (sizeof(T) == sizeof(int32_t) || sizeof(T) == sizeof(long long))
   {
     return CudaAtomic::compare_exchange(addr, expected, desired, success, failure, scope);
   }
