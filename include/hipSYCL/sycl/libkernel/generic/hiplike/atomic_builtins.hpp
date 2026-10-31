@@ -116,15 +116,14 @@ namespace CudaAtomic
     }
     else
     {
-      PTXAtomicDetail::store(reinterpret_cast<long long*>(ptr), bit_cast<int>(value), order, scope);
+      PTXAtomicDetail::store(reinterpret_cast<long long*>(ptr), bit_cast<long long>(value), order, scope);
     }
 
   }
 
   template<class T>
-  HIPSYCL_HIPLIKE_BUILTIN void load(
+  HIPSYCL_HIPLIKE_BUILTIN T load(
     T* ptr,
-    T value,
     memory_order order,
     memory_scope scope
   ) noexcept
@@ -133,11 +132,11 @@ namespace CudaAtomic
 
     if constexpr (sizeof(T) == sizeof(int32_t))
     {
-      PTXAtomicDetail::load(reinterpret_cast<int*>(ptr), order, scope);
+      return bit_cast<T>(PTXAtomicDetail::load(reinterpret_cast<int*>(ptr), order, scope));
     }
     else
     {
-      PTXAtomicDetail::load(reinterpret_cast<long long*>(ptr), order, scope);
+      return bit_cast<T>(PTXAtomicDetail::load(reinterpret_cast<long long*>(ptr), order, scope));
     }
 
   }
@@ -166,7 +165,7 @@ namespace CudaAtomic
     }
     else
     {
-      long long observed = bit_cast<int>(expected);
+      long long observed = bit_cast<long long>(expected);
       const bool won = PTXAtomicDetail::compare_exchange(
         reinterpret_cast<long long*>(ptr), &observed, bit_cast<long long>(desired),
         success, failure, scope
@@ -194,17 +193,19 @@ __acpp_atomic_store(T *addr, T x, memory_order order,
   }
   else
 #endif
-//legacy
-  if constexpr(sizeof(T) == sizeof(int32_t)) {
+  {
+    // Legacy path for unsupported PTX widths and non-PTX backends.
+    if constexpr(sizeof(T) == sizeof(int32_t)) {
 #ifdef ACPP_NEEDS_CUDA_ATOMIC_WORKAROUNDS
-    if(scope == memory_scope::device && order == memory_order::release){
-      __acpp_cuda_atomic_store_device_rel_i32(reinterpret_cast<int32_t*>(addr),
-                                              bit_cast<int32_t>(x));
-      return;
-    }
+      if(scope == memory_scope::device && order == memory_order::release){
+        __acpp_cuda_atomic_store_device_rel_i32(reinterpret_cast<int32_t*>(addr),
+                                                bit_cast<int32_t>(x));
+        return;
+      }
 #endif
+    }
+    __atomic_store_n(addr, x, builtin_memory_order(order));
   }
-  __atomic_store_n(addr, x, builtin_memory_order(order));
 }
 
 template <access::address_space S>
@@ -218,6 +219,7 @@ __acpp_atomic_store(float *addr, float x, memory_order order,
 //legacy
   __atomic_store_n(reinterpret_cast<unsigned int *>(addr),
                    bit_cast<unsigned int>(x), builtin_memory_order(order));
+#endif
 }
 
 template <access::address_space S>
@@ -231,6 +233,7 @@ __acpp_atomic_store(double *addr, double x, memory_order order,
 //legacy
   __atomic_store_n(reinterpret_cast<unsigned long long *>(addr),
                    bit_cast<unsigned long long>(x), builtin_memory_order(order));
+#endif
 }
 
 template <access::address_space S, class T>
@@ -240,20 +243,22 @@ HIPSYCL_HIPLIKE_BUILTIN T __acpp_atomic_load(T *addr, memory_order order,
 #ifdef SHARED_PTX_ATOMIC
   if constexpr (sizeof(T) == sizeof(int32_t) || sizeof(T) == sizeof(long long))
   {
-    CudaAtomic::load(addr, order, scope);
+    return CudaAtomic::load(addr, order, scope);
   }
   else
 #endif
-//legacy
-  if constexpr(sizeof(T) == sizeof(int32_t)) {
+  {
+    // Legacy path for unsupported PTX widths and non-PTX backends.
+    if constexpr(sizeof(T) == sizeof(int32_t)) {
 #ifdef ACPP_NEEDS_CUDA_ATOMIC_WORKAROUNDS
-    if(scope == memory_scope::device && order == memory_order::acquire){
-      return bit_cast<T>(__acpp_cuda_atomic_load_device_acq_i32(
-          reinterpret_cast<int32_t*>(addr)));
-    }
+      if(scope == memory_scope::device && order == memory_order::acquire){
+        return bit_cast<T>(__acpp_cuda_atomic_load_device_acq_i32(
+            reinterpret_cast<int32_t*>(addr)));
+      }
 #endif
+    }
+    return __atomic_load_n(addr, builtin_memory_order(order));
   }
-  return __atomic_load_n(addr, builtin_memory_order(order));
 }
 
 template <access::address_space S>
@@ -265,6 +270,7 @@ __acpp_atomic_load(float *addr, memory_order order,
 #else
   return bit_cast<float>(__atomic_load_n(reinterpret_cast<unsigned int *>(addr),
                                          builtin_memory_order(order)));
+#endif
 }
 
 template <access::address_space S>
@@ -277,6 +283,7 @@ __acpp_atomic_load(double *addr, memory_order order,
   return bit_cast<double>(
       __atomic_load_n(reinterpret_cast<unsigned long long *>(addr),
                       builtin_memory_order(order)));
+#endif
 }
 
 //********************* atomic exchange ***********************
