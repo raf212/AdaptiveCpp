@@ -116,7 +116,7 @@ namespace CudaAtomic
     }
     else
     {
-      PTXAtomicDetail::store(reinterpret_cast<int*>(ptr), bit_cast<int>(value), order, scope);
+      PTXAtomicDetail::store(reinterpret_cast<long long*>(ptr), bit_cast<int>(value), order, scope);
     }
 
   }
@@ -137,7 +137,7 @@ namespace CudaAtomic
     }
     else
     {
-      PTXAtomicDetail::load(reinterpret_cast<int*>(ptr), order, scope);
+      PTXAtomicDetail::load(reinterpret_cast<long long*>(ptr), order, scope);
     }
 
   }
@@ -168,7 +168,7 @@ namespace CudaAtomic
     {
       long long observed = bit_cast<int>(expected);
       const bool won = PTXAtomicDetail::compare_exchange(
-        reinterpret_cast<int*>(ptr), &observed, bit_cast<long long>(desired),
+        reinterpret_cast<long long*>(ptr), &observed, bit_cast<long long>(desired),
         success, failure, scope
       );
       expected = bit_cast<T>(observed);
@@ -179,7 +179,7 @@ namespace CudaAtomic
   
 }
 
-#else
+#endif
 
 
 template <access::address_space S, class T>
