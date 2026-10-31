@@ -213,7 +213,7 @@ __acpp_atomic_store(float *addr, float x, memory_order order,
                        memory_scope scope) noexcept {
 //new
 #ifdef SHARED_PTX_ATOMIC
-  cuda_atomic_detail::store(addr, x, order, scope);
+  CudaAtomic::store(addr, x, order, scope);
 #else
 //legacy
   __atomic_store_n(reinterpret_cast<unsigned int *>(addr),
@@ -226,7 +226,7 @@ __acpp_atomic_store(double *addr, double x, memory_order order,
                        memory_scope scope) noexcept {
 //new
 #ifdef SHARED_PTX_ATOMIC
-  cuda_atomic_detail::store(addr, x, order, scope);
+  CudaAtomic::store(addr, x, order, scope);
 #else
 //legacy
   __atomic_store_n(reinterpret_cast<unsigned long long *>(addr),
@@ -261,7 +261,7 @@ HIPSYCL_HIPLIKE_BUILTIN float
 __acpp_atomic_load(float *addr, memory_order order,
                       memory_scope scope) noexcept {
 #ifdef SHARED_PTX_ATOMIC
-  return cuda_atomic_detail::load(addr, order, scope);
+  return CudaAtomic::load(addr, order, scope);
 #else
   return bit_cast<float>(__atomic_load_n(reinterpret_cast<unsigned int *>(addr),
                                          builtin_memory_order(order)));
@@ -272,7 +272,7 @@ HIPSYCL_HIPLIKE_BUILTIN double
 __acpp_atomic_load(double *addr, memory_order order,
                       memory_scope scope) noexcept {
 #ifdef SHARED_PTX_ATOMIC
-  return cuda_atomic_detail::load(addr, order, scope);
+  return CudaAtomic::load(addr, order, scope);
 #else
   return bit_cast<double>(
       __atomic_load_n(reinterpret_cast<unsigned long long *>(addr),
