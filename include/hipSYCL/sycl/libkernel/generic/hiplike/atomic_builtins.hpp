@@ -17,6 +17,18 @@
 
 #include <type_traits>
 
+//include cuda_ptx_atomic_asm header when SM70+
+#if ACPP_LIBKERNEL_IS_DEVICE_PASS_CUDA && \
+  !defined(ACPP_LIBKERNEL_CUDA_NVCXX) && \
+  defined(__CUDA_ARCH__) && \
+  __CUDA_ARCH__ >= 700
+
+    #define ACPP_PTX_DIRECT 1
+    #include "hipSYCL/sycl/libkernel/detail/cuda_ptx_atomic_asm.hpp"
+    #undef ACPP_PTX_DIRECT
+    #define SHARED_PTX_ATOMIC 1
+
+#endif
 
 #if ACPP_LIBKERNEL_IS_DEVICE_PASS_CUDA ||                                   \
     ACPP_LIBKERNEL_IS_DEVICE_PASS_HIP
@@ -83,6 +95,60 @@ int32_t __acpp_cuda_atomic_load_device_acq_i32(int32_t *ptr) {
 }
 
 #endif
+
+#ifdef SHARED_PTX_ATOMIC
+
+namespace CudaAtomic
+{
+  template<class T>
+  HIPSYCL_HIPLIKE_BUILTIN void store(
+    T* ptr,
+    T value,
+    memory_order order,
+    memory_scope scope
+  ) noexcept
+  {
+    static_assert(sizeof(T) == sizeof(long) || sizeof(T) == sizeof(long long),"The PTX primitive test targets 32/64-bit atomic types");
+
+    if constexpr (sizeof(T) == sizeof(long))
+    {
+      PTXAtomicDetail::store(reinterpret_cast<int*>(ptr), bit_cast<int>(value), order, scope);
+    }
+    else
+    {
+      PTXAtomicDetail::store(reinterpret_cast<int*>(ptr), bit_cast<int>(value), order, scope);
+    }
+
+  }
+
+  template<class T>
+  HIPSYCL_HIPLIKE_BUILTIN void load(
+    T* ptr,
+    T value,
+    memory_order order,
+    memory_scope scope
+  ) noexcept
+  {
+    static_assert(sizeof(T) == sizeof(long) || sizeof(T) == sizeof(long long),"The PTX primitive test targets 32/64-bit atomic types");
+
+    if constexpr (sizeof(T) == sizeof(long))
+    {
+      PTXAtomicDetail::load(reinterpret_cast<int*>(ptr), order, scope);
+    }
+    else
+    {
+      PTXAtomicDetail::load(reinterpret_cast<int*>(ptr), order, scope);
+    }
+
+  }
+  
+}
+
+
+#else
+
+
+
 
 template <access::address_space S, class T>
 HIPSYCL_HIPLIKE_BUILTIN void
