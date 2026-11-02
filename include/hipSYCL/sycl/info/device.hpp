@@ -12,11 +12,13 @@
 #define HIPSYCL_INFO_DEVICE_HPP
 
 #include <cstddef>
+#include <vector>
 
 #include "hipSYCL/sycl/aspect.hpp"
 #include "info.hpp"
 #include "../types.hpp"
 #include "../aspect.hpp"
+#include "../libkernel/memory.hpp"
 
 namespace hipsycl {
 namespace sycl {
@@ -174,6 +176,9 @@ namespace device {
   HIPSYCL_DEFINE_INFO_DESCRIPTOR(reference_count, detail::u_int);
 
   HIPSYCL_DEFINE_INFO_DESCRIPTOR(AdaptiveCpp_free_memory, size_t);
+
+  HIPSYCL_DEFINE_INFO_DESCRIPTOR(atomic_memory_order_capabilities, std::vector<memory_order>);
+  HIPSYCL_DEFINE_INFO_DESCRIPTOR(atomic_memory_scope_capabilities, std::vector<memory_scope>);
 
   // Macros do not handle types with commans in them, so we do things manually
   struct AdaptiveCpp_priority_range { using return_type = std::pair<int, int>; };

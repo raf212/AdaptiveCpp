@@ -14,7 +14,9 @@
 #include <exception>
 #include <limits>
 #include <type_traits>
+#include <vector>
 
+#include "hipSYCL/sycl/libkernel/memory.hpp"
 #include "info/device.hpp"
 #include "types.hpp"
 #include "aspect.hpp"
@@ -826,6 +828,61 @@ HIPSYCL_SPECIALIZE_GET_INFO(device, AdaptiveCpp_free_memory)
   return get_rt_device()->get_property(
       rt::device_uint_property::free_memory);
 }
+
+
+HIPSYCL_SPECIALIZE_GET_INFO(device, atomic_memory_order_capabilities)
+{
+  std::vector<memory_order> result;
+  const std::vector<rt::atomic_memory_order_capability> capabilities = get_rt_device()->get_atomic_memory_order_capabilities();
+  result.reserve(capabilities.size());
+
+  for (const rt::atomic_memory_order_capability capability : capabilities) 
+  {
+    switch (capability) 
+    {
+      case rt::atomic_memory_order_capability::relaxed:
+        result.push_back(memory_order::relaxed);
+        break;
+
+      case rt::atomic_memory_order_capability::acquire:
+        result.push_back(memory_order::acquire);
+        break;
+
+      case rt::atomic_memory_order_capability::release:
+        result.push_back(memory_order::release);
+        break;
+
+      case rt::atomic_memory_order_capability::acq_rel:
+        result.push_back(memory_order::acq_rel);
+        break;
+
+      case rt::atomic_memory_order_capability::seq_cst:
+        result.push_back(memory_order::seq_cst);
+        break;
+    }
+  }
+}
+
+HIPSYCL_SPECIALIZE_GET_INFO(device, atomic_memory_scope_capabilities)
+{
+  std::vector<memory_scope> result;
+  const std::vector<rt::atomic_memory_scope_capability> capabilities = get_rt_device()->get_atomic_memory_scope_capabilities();
+  result.reserve(capabilities.size());
+  for (const rt::atomic_memory_scope_capability capability : capabilities) 
+  {
+    switch (capability) 
+    {
+      case rt::atomic_memory_scope_capability::sub_group:
+        result.push_back(memory_scope::sub_group);
+        break;
+
+      case rt::atomic_memory_scope_capability::work_group:
+        result.push_back(memory_scope::work_group);
+        break;
+    }
+  }
+}
+
 
 namespace detail {
 
