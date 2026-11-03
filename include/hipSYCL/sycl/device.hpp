@@ -14,9 +14,7 @@
 #include <exception>
 #include <limits>
 #include <type_traits>
-#include <vector>
 
-#include "hipSYCL/sycl/libkernel/memory.hpp"
 #include "info/device.hpp"
 #include "types.hpp"
 #include "aspect.hpp"
