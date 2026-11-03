@@ -9,6 +9,8 @@
  */
 // SPDX-License-Identifier: BSD-2-Clause
 #include <iostream>
+#include <vector>
+#include <algorithm>
 
 #include "sycl_test_suite.hpp"
 
@@ -50,6 +52,11 @@ BOOST_AUTO_TEST_CASE(kernel_specific_queries) {
   BOOST_TEST(max_sg_size > 0);
   
   // TODO Add tests for more queries
+}
+
+namespace atomic_capabilities_query
+{
+  
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -861,6 +861,7 @@ HIPSYCL_SPECIALIZE_GET_INFO(device, atomic_memory_order_capabilities)
         break;
     }
   }
+  return result;
 }
 
 HIPSYCL_SPECIALIZE_GET_INFO(device, atomic_memory_scope_capabilities)
@@ -879,8 +880,17 @@ HIPSYCL_SPECIALIZE_GET_INFO(device, atomic_memory_scope_capabilities)
       case rt::atomic_memory_scope_capability::work_group:
         result.push_back(memory_scope::work_group);
         break;
+
+      case rt::atomic_memory_scope_capability::device:
+        result.push_back(memory_scope::device);
+        break;
+      
+      case rt::atomic_memory_scope_capability::system:
+        result.push_back(memory_scope::system);
+        break;
     }
   }
+  return result;
 }
 
 
