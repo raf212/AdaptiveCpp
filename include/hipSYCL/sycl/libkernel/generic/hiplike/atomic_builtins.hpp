@@ -17,6 +17,18 @@
 
 #include <type_traits>
 
+//include cuda_ptx_atomic_asm header when SM70+
+#if ACPP_LIBKERNEL_IS_DEVICE_PASS_CUDA && \
+    !defined(ACPP_LIBKERNEL_CUDA_NVCXX) && \
+    defined(__CUDA_ARCH__) && \
+    __CUDA_ARCH__ >= 700
+
+#define ACPP_PTX_DIRECT 1
+#include "hipSYCL/sycl/libkernel/detail/cuda_ptx_atomic_asm.hpp"
+#undef ACPP_PTX_DIRECT
+#define SHARED_PTX_ATOMIC 1
+
+#endif
 
 #if ACPP_LIBKERNEL_IS_DEVICE_PASS_CUDA ||                                   \
     ACPP_LIBKERNEL_IS_DEVICE_PASS_HIP
@@ -84,67 +96,207 @@ int32_t __acpp_cuda_atomic_load_device_acq_i32(int32_t *ptr) {
 
 #endif
 
+#ifdef SHARED_PTX_ATOMIC
+
+namespace cuda_atomic {
+
+template<class T>
+HIPSYCL_HIPLIKE_BUILTIN void store(
+    T* ptr, T value, memory_order order, memory_scope scope) noexcept {
+  static_assert(sizeof(T) == sizeof(int32_t) || sizeof(T) == sizeof(long long),
+                "The PTX primitive test targets 32/64-bit atomic types");
+
+  if constexpr (sizeof(T) == sizeof(int32_t)) {
+    ptx_atomic_detail::store(reinterpret_cast<int*>(ptr), bit_cast<int>(value), order, scope);
+  } else {
+    ptx_atomic_detail::store(reinterpret_cast<long long*>(ptr), bit_cast<long long>(value), order, scope);
+  }
+}
+
+template<class T>
+HIPSYCL_HIPLIKE_BUILTIN T load(
+    T* ptr, memory_order order, memory_scope scope) noexcept {
+  static_assert(sizeof(T) == sizeof(int32_t) || sizeof(T) == sizeof(long long),
+                "The PTX primitive test targets 32/64-bit atomic types");
+
+  if constexpr (sizeof(T) == sizeof(int32_t)) {
+    return bit_cast<T>(ptx_atomic_detail::load(reinterpret_cast<int*>(ptr), order, scope));
+  } else {
+    return bit_cast<T>(ptx_atomic_detail::load(reinterpret_cast<long long*>(ptr), order, scope));
+  }
+}
+
+template<class T>
+HIPSYCL_HIPLIKE_BUILTIN bool compare_exchange(
+    T* ptr, T& expected, T desired, memory_order success,
+    memory_order failure, memory_scope scope) noexcept {
+  static_assert(sizeof(T) == sizeof(int32_t) || sizeof(T) == sizeof(long long),
+                "The PTX primitive test targets 32/64-bit atomic types");
+
+  if constexpr (sizeof(T) == sizeof(int32_t)) {
+    int observed = bit_cast<int>(expected);
+    const bool won = ptx_atomic_detail::compare_exchange(
+        reinterpret_cast<int*>(ptr), &observed, bit_cast<int>(desired),
+        success, failure, scope);
+    expected = bit_cast<T>(observed);
+    return won;
+  } else {
+    long long observed = bit_cast<long long>(expected);
+    const bool won = ptx_atomic_detail::compare_exchange(
+        reinterpret_cast<long long*>(ptr), &observed, bit_cast<long long>(desired),
+        success, failure, scope);
+    expected = bit_cast<T>(observed);
+    return won;
+  }
+}
+
+// Use the existing ordered PTX CAS for RMWs whose requested semantics are
+// stronger than the legacy CUDA intrinsics (or require system scope).
+enum class rmw_operation { exchange, bit_and, bit_or, bit_xor, add, sub, min, max };
+
+template<rmw_operation Op, class T>
+HIPSYCL_HIPLIKE_BUILTIN T fetch_rmw(
+    T* ptr, T x, memory_order order, memory_scope scope) noexcept {
+  T old = load(ptr, memory_order::relaxed, scope);
+  while (true) {
+    T desired;
+    if constexpr (Op == rmw_operation::exchange)
+      desired = x;
+    else if constexpr (Op == rmw_operation::bit_and)
+      desired = old & x;
+    else if constexpr (Op == rmw_operation::bit_or)
+      desired = old | x;
+    else if constexpr (Op == rmw_operation::bit_xor)
+      desired = old ^ x;
+    else if constexpr (Op == rmw_operation::min)
+      desired = old < x ? old : x;
+    else if constexpr (Op == rmw_operation::max)
+      desired = old > x ? old : x;
+    else if constexpr (std::is_integral_v<T>) {
+      using U = std::make_unsigned_t<T>;
+      const U lhs = bit_cast<U>(old);
+      const U rhs = bit_cast<U>(x);
+      if constexpr (Op == rmw_operation::add)
+        desired = bit_cast<T>(static_cast<U>(lhs + rhs));
+      else
+        desired = bit_cast<T>(static_cast<U>(lhs - rhs));
+    } else if constexpr (Op == rmw_operation::add)
+      desired = old + x;
+    else
+      desired = old - x;
+
+    T expected = old;
+    if (compare_exchange(ptr, expected, desired, order,
+                         memory_order::relaxed, scope))
+      return old;
+    old = expected;
+  }
+}
+
+}
+
+#endif
+
+
 template <access::address_space S, class T>
 HIPSYCL_HIPLIKE_BUILTIN void
 __acpp_atomic_store(T *addr, T x, memory_order order,
                        memory_scope scope) noexcept {
-  if constexpr(sizeof(T) == sizeof(int32_t)) {
-#ifdef ACPP_NEEDS_CUDA_ATOMIC_WORKAROUNDS
-    if(scope == memory_scope::device && order == memory_order::release){
-      __acpp_cuda_atomic_store_device_rel_i32(reinterpret_cast<int32_t*>(addr),
-                                              bit_cast<int32_t>(x));
-      return;
-    }
+//new
+#ifdef SHARED_PTX_ATOMIC
+  if constexpr (sizeof(T) == sizeof(int32_t) || sizeof(T) == sizeof(long long)) {
+    cuda_atomic::store(addr, x, order, scope);
+  } else
 #endif
+  {
+    // Legacy path for unsupported PTX widths and non-PTX backends.
+    if constexpr(sizeof(T) == sizeof(int32_t)) {
+#ifdef ACPP_NEEDS_CUDA_ATOMIC_WORKAROUNDS
+      if(scope == memory_scope::device && order == memory_order::release){
+        __acpp_cuda_atomic_store_device_rel_i32(reinterpret_cast<int32_t*>(addr),
+                                                bit_cast<int32_t>(x));
+        return;
+      }
+#endif
+    }
+    __atomic_store_n(addr, x, builtin_memory_order(order));
   }
-  __atomic_store_n(addr, x, builtin_memory_order(order));
 }
 
 template <access::address_space S>
 HIPSYCL_HIPLIKE_BUILTIN void
 __acpp_atomic_store(float *addr, float x, memory_order order,
                        memory_scope scope) noexcept {
+//new
+#ifdef SHARED_PTX_ATOMIC
+  cuda_atomic::store(addr, x, order, scope);
+#else
+//legacy
   __atomic_store_n(reinterpret_cast<unsigned int *>(addr),
                    bit_cast<unsigned int>(x), builtin_memory_order(order));
+#endif
 }
 
 template <access::address_space S>
 HIPSYCL_HIPLIKE_BUILTIN void
 __acpp_atomic_store(double *addr, double x, memory_order order,
                        memory_scope scope) noexcept {
+//new
+#ifdef SHARED_PTX_ATOMIC
+  cuda_atomic::store(addr, x, order, scope);
+#else
+//legacy
   __atomic_store_n(reinterpret_cast<unsigned long long *>(addr),
                    bit_cast<unsigned long long>(x), builtin_memory_order(order));
+#endif
 }
 
 template <access::address_space S, class T>
 HIPSYCL_HIPLIKE_BUILTIN T __acpp_atomic_load(T *addr, memory_order order,
                                                 memory_scope scope) noexcept {
-  if constexpr(sizeof(T) == sizeof(int32_t)) {
-#ifdef ACPP_NEEDS_CUDA_ATOMIC_WORKAROUNDS
-    if(scope == memory_scope::device && order == memory_order::acquire){
-      return bit_cast<T>(__acpp_cuda_atomic_load_device_acq_i32(
-          reinterpret_cast<int32_t*>(addr)));
-    }
+//new
+#ifdef SHARED_PTX_ATOMIC
+  if constexpr (sizeof(T) == sizeof(int32_t) || sizeof(T) == sizeof(long long)) {
+    return cuda_atomic::load(addr, order, scope);
+  } else
 #endif
+  {
+    // Legacy path for unsupported PTX widths and non-PTX backends.
+    if constexpr(sizeof(T) == sizeof(int32_t)) {
+#ifdef ACPP_NEEDS_CUDA_ATOMIC_WORKAROUNDS
+      if(scope == memory_scope::device && order == memory_order::acquire){
+        return bit_cast<T>(__acpp_cuda_atomic_load_device_acq_i32(
+            reinterpret_cast<int32_t*>(addr)));
+      }
+#endif
+    }
+    return __atomic_load_n(addr, builtin_memory_order(order));
   }
-  return __atomic_load_n(addr, builtin_memory_order(order));
 }
 
 template <access::address_space S>
 HIPSYCL_HIPLIKE_BUILTIN float
 __acpp_atomic_load(float *addr, memory_order order,
                       memory_scope scope) noexcept {
+#ifdef SHARED_PTX_ATOMIC
+  return cuda_atomic::load(addr, order, scope);
+#else
   return bit_cast<float>(__atomic_load_n(reinterpret_cast<unsigned int *>(addr),
                                          builtin_memory_order(order)));
+#endif
 }
 
 template <access::address_space S>
 HIPSYCL_HIPLIKE_BUILTIN double
 __acpp_atomic_load(double *addr, memory_order order,
                       memory_scope scope) noexcept {
+#ifdef SHARED_PTX_ATOMIC
+  return cuda_atomic::load(addr, order, scope);
+#else
   return bit_cast<double>(
       __atomic_load_n(reinterpret_cast<unsigned long long *>(addr),
                       builtin_memory_order(order)));
+#endif
 }
 
 //********************* atomic exchange ***********************
@@ -152,6 +304,13 @@ __acpp_atomic_load(double *addr, memory_order order,
 template <access::address_space S, class T>
 HIPSYCL_HIPLIKE_BUILTIN T __acpp_atomic_exchange(
     T *addr, T x, memory_order order, memory_scope scope) noexcept {
+#ifdef SHARED_PTX_ATOMIC
+  if constexpr (sizeof(T) == 4 || sizeof(T) == 8) {
+    if (order != memory_order::relaxed || scope == memory_scope::system)
+      return cuda_atomic::fetch_rmw<cuda_atomic::rmw_operation::exchange>(
+          addr, x, order, scope);
+  }
+#endif
   return atomicExch(addr, x);
 }
 
@@ -222,9 +381,16 @@ HIPSYCL_HIPLIKE_BUILTIN bool __acpp_atomic_compare_exchange_strong(
     T *addr, T &expected, T desired, memory_order success, memory_order failure,
     memory_scope scope) noexcept {
 
-  T old = expected;
-  expected = atomicCAS(addr, expected, desired);
-  return old == expected;
+#ifdef SHARED_PTX_ATOMIC
+  if constexpr (sizeof(T) == sizeof(int32_t) || sizeof(T) == sizeof(long long)) {
+    return cuda_atomic::compare_exchange(addr, expected, desired, success, failure, scope);
+  } else
+#endif
+  {
+    T old = expected;
+    expected = atomicCAS(addr, expected, desired);
+    return old == expected;
+  }
 }
 
 
@@ -401,6 +567,13 @@ HIPSYCL_HIPLIKE_BUILTIN bool __acpp_atomic_compare_exchange_weak(
 template <access::address_space S, class T>
 HIPSYCL_HIPLIKE_BUILTIN T __acpp_atomic_fetch_and(
     T *addr, T x, memory_order order, memory_scope scope) noexcept {
+#ifdef SHARED_PTX_ATOMIC
+  if constexpr (sizeof(T) == 4 || sizeof(T) == 8) {
+    if (order != memory_order::relaxed || scope == memory_scope::system)
+      return cuda_atomic::fetch_rmw<cuda_atomic::rmw_operation::bit_and>(
+          addr, x, order, scope);
+  }
+#endif
   return atomicAnd(addr, x);
 }
 
@@ -413,7 +586,14 @@ HIPSYCL_DEFINE_HIPLIKE_ATOMIC_INTEGRAL_NONNATIVE_OVERLOADS_AGNOSTIC(
 template <access::address_space S, class T>
 HIPSYCL_HIPLIKE_BUILTIN T __acpp_atomic_fetch_or(T *addr, T x, memory_order order,
                                                     memory_scope scope) noexcept {
-   return atomicOr(addr, x);
+ #ifdef SHARED_PTX_ATOMIC
+  if constexpr (sizeof(T) == 4 || sizeof(T) == 8) {
+    if (order != memory_order::relaxed || scope == memory_scope::system)
+      return cuda_atomic::fetch_rmw<cuda_atomic::rmw_operation::bit_or>(
+          addr, x, order, scope);
+  }
+#endif
+  return atomicOr(addr, x);
 }
 
 HIPSYCL_DEFINE_HIPLIKE_ATOMIC_INTEGRAL_NONNATIVE_OVERLOADS_AGNOSTIC(
@@ -424,7 +604,14 @@ HIPSYCL_DEFINE_HIPLIKE_ATOMIC_INTEGRAL_NONNATIVE_OVERLOADS_AGNOSTIC(
 template <access::address_space S, class T>
 HIPSYCL_HIPLIKE_BUILTIN T __acpp_atomic_fetch_xor(T *addr, T x, memory_order order,
                                                      memory_scope scope) noexcept {
-   return atomicXor(addr, x);
+ #ifdef SHARED_PTX_ATOMIC
+  if constexpr (sizeof(T) == 4 || sizeof(T) == 8) {
+    if (order != memory_order::relaxed || scope == memory_scope::system)
+      return cuda_atomic::fetch_rmw<cuda_atomic::rmw_operation::bit_xor>(
+          addr, x, order, scope);
+  }
+#endif
+  return atomicXor(addr, x);
 }
 
 HIPSYCL_DEFINE_HIPLIKE_ATOMIC_INTEGRAL_NONNATIVE_OVERLOADS_AGNOSTIC(
@@ -438,6 +625,13 @@ HIPSYCL_DEFINE_HIPLIKE_ATOMIC_INTEGRAL_NONNATIVE_OVERLOADS_AGNOSTIC(
 template <access::address_space S, class T>
 HIPSYCL_HIPLIKE_BUILTIN T __acpp_atomic_fetch_add(
     T *addr, T x, memory_order order, memory_scope scope) noexcept {
+#ifdef SHARED_PTX_ATOMIC
+  if constexpr (sizeof(T) == 4 || sizeof(T) == 8) {
+    if (order != memory_order::relaxed || scope == memory_scope::system)
+      return cuda_atomic::fetch_rmw<cuda_atomic::rmw_operation::add>(
+          addr, x, order, scope);
+  }
+#endif
   return atomicAdd(addr, x);
 }
 
@@ -452,28 +646,36 @@ HIPSYCL_DEFINE_HIPLIKE_ATOMIC_INTEGRAL_NONNATIVE_OVERLOADS_AGNOSTIC(
 template <access::address_space S, class T>
 HIPSYCL_HIPLIKE_BUILTIN T __acpp_atomic_fetch_sub(
     T *addr, T x, memory_order order, memory_scope scope) noexcept {
+#ifdef SHARED_PTX_ATOMIC
+  if constexpr (sizeof(T) == 4 || sizeof(T) == 8) {
+    if (order != memory_order::relaxed || scope == memory_scope::system)
+      return cuda_atomic::fetch_rmw<cuda_atomic::rmw_operation::sub>(
+          addr, x, order, scope);
+  }
+#endif
   return atomicSub(addr, x);
 }
 
 // Need CAS loop for 64bit types - the definition of this
 // is required in order to be able to use the 
 // HIPSYCL_DEFINE_HIPLIKE_ATOMIC_INTEGRAL_NONNATIVE_OVERLOADS macro
-
-#define HIPSYCL_DEFINE_HIPLIKE_ATOMICSUB_CAS_EMULATION(Type)                   \
+#define HIPSYCL_DEFINE_HIPLIKE_ATOMICSUB_CAS_EMULATION(Type, Arithmetic_T)     \
   template <access::address_space S>                                           \
-  HIPSYCL_HIPLIKE_BUILTIN Type __acpp_atomic_fetch_sub(                     \
+  HIPSYCL_HIPLIKE_BUILTIN Type __acpp_atomic_fetch_sub(                         \
       Type *addr, Type x, memory_order order, memory_scope scope) noexcept {   \
-    Type old = __acpp_atomic_load<S>(addr, order, scope);                   \
-    while (!__acpp_atomic_compare_exchange_strong<S>(addr, old, old - x,    \
-                                                        order, order, scope))  \
-      ;                                                                        \
-    return old;                                                                \
+    Type old = __acpp_atomic_load<S>(addr, memory_order::relaxed, scope);       \
+    Type desired;                                                            \
+    do {                                                                     \
+      desired = bit_cast<Type>(static_cast<Arithmetic_T>(old) - static_cast<Arithmetic_T>(x));              \
+    } while (!__acpp_atomic_compare_exchange_strong<S>(                       \
+        addr, old, desired, order, memory_order::relaxed, scope));             \
+    return old;                                                              \
   }
 
-HIPSYCL_DEFINE_HIPLIKE_ATOMICSUB_CAS_EMULATION(long long)
-HIPSYCL_DEFINE_HIPLIKE_ATOMICSUB_CAS_EMULATION(unsigned long long)
-HIPSYCL_DEFINE_HIPLIKE_ATOMICSUB_CAS_EMULATION(float)
-HIPSYCL_DEFINE_HIPLIKE_ATOMICSUB_CAS_EMULATION(double)
+HIPSYCL_DEFINE_HIPLIKE_ATOMICSUB_CAS_EMULATION(long long, unsigned long long)
+HIPSYCL_DEFINE_HIPLIKE_ATOMICSUB_CAS_EMULATION(unsigned long long, unsigned long long)
+HIPSYCL_DEFINE_HIPLIKE_ATOMICSUB_CAS_EMULATION(float, float)
+HIPSYCL_DEFINE_HIPLIKE_ATOMICSUB_CAS_EMULATION(double, double)
 
 template <access::address_space S>
 HIPSYCL_HIPLIKE_BUILTIN long
@@ -516,6 +718,13 @@ HIPSYCL_HIPLIKE_BUILTIN T __acpp_atomic_fetch_min(
   return __hip_atomic_fetch_min(addr, x, builtin_memory_order(order),
       __HIP_MEMORY_SCOPE_AGENT);
 #else
+#ifdef SHARED_PTX_ATOMIC
+  if constexpr (sizeof(T) == 4 || sizeof(T) == 8) {
+    if (order != memory_order::relaxed || scope == memory_scope::system)
+      return cuda_atomic::fetch_rmw<cuda_atomic::rmw_operation::min>(
+          addr, x, order, scope);
+  }
+#endif
   return atomicMin(addr, x);
 #endif
 }
@@ -524,31 +733,32 @@ HIPSYCL_HIPLIKE_BUILTIN T __acpp_atomic_fetch_min(
 HIPSYCL_DEFINE_HIPLIKE_ATOMIC_INTEGRAL_NONNATIVE_OVERLOADS_SIGNED(
     __acpp_atomic_fetch_min, __acpp_bitcast_atomic_fetch_min);
 
+    
 // Need CAS loop for emulation of floating point overloads
 template <access::address_space S>
 HIPSYCL_HIPLIKE_BUILTIN float
 __acpp_atomic_fetch_min(float *addr, float x, memory_order order,
                            memory_scope scope) noexcept {
-  float old = __acpp_atomic_load<S>(addr, order, scope);
+  float old = __acpp_atomic_load<S>(addr, memory_order::relaxed, scope);
+  float desired;
   do {
-    if (old < x)
-      return old;
+    desired = (old < x) ? old : x;
   } while (!__acpp_atomic_compare_exchange_strong<S>(
-      addr, old, x, order, order, scope));
-  return x;
+      addr, old, desired, order, memory_order::relaxed, scope));
+  return old;
 }
 
 template <access::address_space S>
 HIPSYCL_HIPLIKE_BUILTIN double
 __acpp_atomic_fetch_min(double *addr, double x, memory_order order,
                            memory_scope scope) noexcept {
-  double old = __acpp_atomic_load<S>(addr, order, scope);
+  double old = __acpp_atomic_load<S>(addr, memory_order::relaxed, scope);
+  double desired;
   do {
-    if (old < x)
-      return old;
+    desired = (old < x) ? old : x;
   } while (!__acpp_atomic_compare_exchange_strong<S>(
-      addr, old, x, order, order, scope));
-  return x;
+      addr, old, desired, order, memory_order::relaxed, scope));
+  return old;
 }
 
 // *********************** atomic max ****************************
@@ -562,6 +772,13 @@ HIPSYCL_HIPLIKE_BUILTIN T __acpp_atomic_fetch_max(
   return __hip_atomic_fetch_max(addr, x, builtin_memory_order(order),
       __HIP_MEMORY_SCOPE_AGENT);
 #else
+#ifdef SHARED_PTX_ATOMIC
+  if constexpr (sizeof(T) == 4 || sizeof(T) == 8) {
+    if (order != memory_order::relaxed || scope == memory_scope::system)
+      return cuda_atomic::fetch_rmw<cuda_atomic::rmw_operation::max>(
+          addr, x, order, scope);
+  }
+#endif
   return atomicMax(addr, x);
 #endif
 }
@@ -575,26 +792,26 @@ template <access::address_space S>
 HIPSYCL_HIPLIKE_BUILTIN float
 __acpp_atomic_fetch_max(float *addr, float x, memory_order order,
                            memory_scope scope) noexcept {
-  float old = __acpp_atomic_load<S>(addr, order, scope);
+  float old = __acpp_atomic_load<S>(addr, memory_order::relaxed, scope);
+  float desired;
   do {
-    if (old > x)
-      return old;
+    desired = (old > x) ? old : x;
   } while (!__acpp_atomic_compare_exchange_strong<S>(
-      addr, old, x, order, order, scope));
-  return x;
+      addr, old, desired, order, memory_order::relaxed, scope));
+  return old;
 }
 
 template <access::address_space S>
 HIPSYCL_HIPLIKE_BUILTIN double
 __acpp_atomic_fetch_max(double *addr, double x, memory_order order,
                            memory_scope scope) noexcept {
-  double old = __acpp_atomic_load<S>(addr, order, scope);
+  double old = __acpp_atomic_load<S>(addr, memory_order::relaxed, scope);
+  double desired;
   do {
-    if (old > x)
-      return old;
+    desired = (old > x) ? old : x;
   } while (!__acpp_atomic_compare_exchange_strong<S>(
-      addr, old, x, order, order, scope));
-  return x;
+      addr, old, desired, order, memory_order::relaxed, scope));
+  return old;
 }
 
 HIPSYCL_BUILTIN void __acpp_atomic_fence(memory_order order, memory_scope scope){
