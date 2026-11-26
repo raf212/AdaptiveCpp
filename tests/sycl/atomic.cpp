@@ -985,4 +985,68 @@ namespace atomic_order_scope_tests::cuda_ptx_test_space {
 
 #endif
 
+
+// Direct CUDA RMW order/scope regression. Keep the existing SSCP tests intact.
+#if ACPP_LIBKERNEL_COMPILER_SUPPORTS_CUDA && !defined(ACPP_LIBKERNEL_CUDA_NVCXX)
+namespace direct_cuda_rmw_tests {
+
+template<class T, sycl::memory_scope Scope>
+void verify(sycl::queue& queue) {
+  T* data = sycl::malloc_device<T>(1, queue);
+  int* results = sycl::malloc_device<int>(1, queue);
+  BOOST_REQUIRE(data != nullptr && results != nullptr);
+
+  T initial = T{0};
+  int errors = 0;
+  queue.memcpy(data, &initial, sizeof(T)).wait_and_throw();
+  queue.single_task([=]() {
+    sycl::atomic_ref<T, sycl::memory_order::relaxed, Scope,
+                     sycl::access::address_space::global_space> atomic{data[0]};
+    const sycl::memory_order orders[] = {
+        sycl::memory_order::relaxed, sycl::memory_order::acquire,
+        sycl::memory_order::release, sycl::memory_order::acq_rel,
+        sycl::memory_order::seq_cst};
+    int failed = 0;
+    for (auto order : orders) {
+      atomic.store(T{10}, sycl::memory_order::relaxed);
+      failed += atomic.exchange(T{12}, order) != T{10};
+      failed += atomic.fetch_add(T{3}, order) != T{12};
+      failed += atomic.fetch_sub(T{2}, order) != T{15};
+      failed += atomic.fetch_min(T{5}, order) != T{13};
+      failed += atomic.fetch_max(T{9}, order) != T{5};
+      failed += atomic.load(sycl::memory_order::relaxed) != T{9};
+      if constexpr(std::is_integral_v<T>) {
+        failed += atomic.fetch_and(T{7}, order) != T{9};
+        failed += atomic.fetch_or(T{8}, order) != T{1};
+        failed += atomic.fetch_xor(T{3}, order) != T{9};
+        failed += atomic.load(sycl::memory_order::relaxed) != T{10};
+      }
+    }
+    results[0] = failed;
+  }).wait_and_throw();
+  queue.memcpy(&errors, results, sizeof(errors)).wait_and_throw();
+  BOOST_CHECK_EQUAL(errors, 0);
+  sycl::free(results, queue);
+  sycl::free(data, queue);
+}
+
+using types = boost::mp11::mp_list<int, unsigned int, long long,
+                                    unsigned long long, float, double>;
+BOOST_AUTO_TEST_CASE_TEMPLATE(direct_cuda_rmw_order_scope, T, types) {
+  sycl::queue queue;
+  if (queue.get_device().get_backend() != sycl::backend::cuda) {
+    BOOST_TEST_MESSAGE("Skipping direct CUDA RMW test: non-CUDA device");
+    return;
+  }
+  if constexpr(sizeof(T) == 8)
+    if (!queue.get_device().has(sycl::aspect::atomic64)) return;
+  if constexpr(std::is_same_v<T, double>)
+    if (!queue.get_device().has(sycl::aspect::fp64)) return;
+  verify<T, sycl::memory_scope::device>(queue);
+  verify<T, sycl::memory_scope::system>(queue);
+}
+
+} // namespace direct_cuda_rmw_tests
+#endif
+
 BOOST_AUTO_TEST_SUITE_END()
